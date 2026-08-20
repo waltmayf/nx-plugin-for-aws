@@ -12,7 +12,7 @@ de-risk the generator design before it's built.
 
 ## Exit criteria (from Epic #5)
 
-- [ ] A Harness (Korey's generator) is deployed and invokable.
+- [x] A Harness (Korey's generator) is deployed and invokable.
 - [ ] A hand-written AG-UI SSE route on a generated tRPC API renders in a stock `@ag-ui/client`
       `HttpAgent` / CopilotKit client.
 - [ ] A bring-your-own AG-UI client connects by URL alone.
@@ -26,7 +26,7 @@ de-risk the generator design before it's built.
 
 | # | Title | Status |
 |---|---|---|
-| #6 | Deploy a Harness + hand-written `/agui` SSE route | In progress — code written, synths clean, not yet deployed |
+| #6 | Deploy a Harness + hand-written `/agui` SSE route | **Answered (see below)** — deployed to sandbox, Harness invoked and responded |
 | #7 | Stock `HttpAgent` + bring-your-own AG-UI client both render the stream | Not started |
 | #8 | `history`/`ListEvents` reconstructs a turn after a dropped connection | Not started |
 | #9 | `/agui` SSE survival against the API Gateway REST 29s cap (Q6) | Not started |
@@ -140,9 +140,53 @@ name or id) and has unit tests exercising a synthetic tool-call sequence
 support lands, not a wire-contract break — the design doc's §12 Q5 recommendation stands, but the
 mapper can be built now that the shape is confirmed.
 
+### #6 — Harness deployed and invokable
+
+**Answered.** Built `@aws/nx-plugin` from this branch (`pnpm nx build @aws/nx-plugin`), then followed the
+plan in `spikes/agui-harness-validation/README.md`: scaffolded a fresh workspace with the *published*
+`@aws/nx-plugin` (`pnpm create @aws/nx-workspace`), then `pnpm link`ed the locally-built
+`dist/packages/nx-plugin` over it so the generators ran from this branch. Ran `ts#api`
+(`--framework=trpc --infra=rest-lambda --auth=iam`), `agentcore-harness`, and `ts#infra`
+`--no-interactive`, all clean. Copied this branch's `chat-api-agui/*` into
+`packages/chat-api/src/agui/` and `infra/application-stack.ts` over the generated one, added
+`@ag-ui/core`, `@ag-ui/encoder`, `@aws-sdk/client-bedrock-agentcore` to `chat-api`'s
+`package.json`, and ran `nx sync` (it wanted `common-constructs` ⇄ `chat-api` workspace
+dependency declarations — pre-existing generated wiring, not spike-specific).
+
+`cdk deploy` (via the `deploy-sandbox` target, `spike-agui-harness-infra-sandbox/*`) reached
+**`CREATE_COMPLETE`** — 46 resources, stack `spike-agui-harness-infra-sandbox-Application`, account
+`796988593450`, region `us-east-1`, deployed 2026-08-20 ~22:40–22:44 UTC. Outputs:
+
+- `ChatApiEndpoint`: `https://r96mmp855c.execute-api.us-east-1.amazonaws.com/prod/`
+- `ChatHarnessHarnessArn`: `arn:aws:bedrock-agentcore:us-east-1:796988593450:harness/spikeaguiharneson_ChatHarness_40C03173-lLhvtHVGzd`
+
+**Invokability confirmed directly against the SDK** (bypassing the `/agui` Lambda, to isolate the
+Harness itself): `InvokeHarnessCommand` with a single user message ("Say the word PONG and nothing
+else.") returned `httpStatusCode: 200` and a 4-event Converse-shaped stream whose
+`contentBlockDelta.delta.text` concatenated to `"PONG"`. This is the first empirical confirmation
+that a Harness built by this branch's `agentcore-harness` generator deploys and responds — Q4/Q5's
+code-reading answers above were written against SDK types only, before any deploy existed.
+
+**Environment gotcha worth recording:** the sandbox this spike ran in provides AWS credentials only
+via the standard EC2/ECS instance-metadata provider (`aws sts get-caller-identity` and the Node
+`@aws-sdk/credential-provider-node` default chain both resolve them fine). The `aws-cdk` CLI's own
+bundled `SdkProvider`, however, failed with `Could not load credentials from any providers` /
+`NoCredentials` against that exact same metadata endpoint — a CDK-CLI-specific credential-chain gap
+in this sandbox, not an account/permissions problem. Resolving credentials once via
+`@aws-sdk/credential-provider-node`'s `defaultProvider()` and exporting them as
+`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN` for the `cdk deploy` subprocess
+worked around it. `CDK_DEFAULT_ACCOUNT`/`CDK_DEFAULT_REGION` also had to be exported explicitly —
+the generated `main.ts` reads them directly and they are not set by default in this sandbox. This is
+purely a spike-execution-environment note; it has no bearing on the generator design.
+
+Stack was torn down after this finding was recorded (see Teardown log) — this section captures
+the evidence, not a live environment.
+
 ### Q6 — 29s cap behaviour / async kickoff feasibility
 
-_(pending deploy)_
+_(pending deploy — see #6 above for what was deployed and then torn down; a future run should
+redeploy to exercise the 29s cap and async-kickoff questions, per the run scope in the dispatch that
+added #6's findings)_
 
 ### Q7 — Article alignment
 
