@@ -1,3 +1,7 @@
+/**
+ * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
 import type { BaseEvent } from '@ag-ui/core';
 import { EventType } from '@ag-ui/core';
 import type {
