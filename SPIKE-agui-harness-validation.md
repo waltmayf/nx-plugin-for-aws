@@ -194,4 +194,10 @@ _(pending deploy / cross-check against the builder.aws.com article)_
 
 ## Teardown log
 
-_(record of `cdk destroy` / stack deletions, with timestamps)_
+- **2026-08-20 ~22:52–22:58 UTC** — `cdk destroy --force "spike-agui-harness-infra-sandbox/*"` against
+  stack `spike-agui-harness-infra-sandbox-Application`, account `796988593450`, region `us-east-1`
+  (the #6 deployment above). Reached `DELETE_COMPLETE` for all 46 resources including the
+  `AWS::BedrockAgentCore::Harness` (`ChatHarness996167C5`, the slowest resource to delete). Confirmed
+  via `aws cloudformation describe-stacks` returning `ValidationError: ... does not exist` and
+  `list-stacks` returning no `spike-agui*` stack in `CREATE_COMPLETE`/`UPDATE_COMPLETE`. No resources
+  from this spike remain deployed.
