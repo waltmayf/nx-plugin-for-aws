@@ -16,7 +16,7 @@ de-risk the generator design before it's built.
 - [ ] A hand-written AG-UI SSE route on a generated tRPC API renders in a stock `@ag-ui/client`
       `HttpAgent` / CopilotKit client.
 - [ ] A bring-your-own AG-UI client connects by URL alone.
-- [ ] Memory reconstruction (history/`ListEvents` after a dropped connection) is answered empirically.
+- [x] Memory reconstruction (history/`ListEvents` after a dropped connection) is answered empirically.
 - [x] The 29s API Gateway REST integration cap behaviour against a held SSE response is answered empirically.
 - [x] The route-registration mechanism for attaching a non-tRPC route to the operation-driven
       REST API is prototyped (Q4).
@@ -346,6 +346,13 @@ _(pending deploy / cross-check against the builder.aws.com article)_
   the redeploy used for the #9/#10/#11 findings above, stack `spike-agui-harness-infra-sandbox-Application`,
   account `796988593450`, region `us-east-1`. Reached `DELETE_COMPLETE` for all 44 resources (the
   `AWS::BedrockAgentCore::Harness` again the slowest, ~2 minutes). Confirmed via
+  `aws cloudformation describe-stacks` (`ValidationError: ... does not exist`) and `list-stacks`
+  (no `spike-agui*` stack in `CREATE_COMPLETE`/`UPDATE_COMPLETE`). No resources from this spike
+  remain deployed.
+- **2026-08-21 ~03:53–03:56 UTC** — `cdk destroy --force "spike-agui-harness-infra-sandbox/*"` against
+  the redeploy used for the #8 findings above, stack `spike-agui-harness-infra-sandbox-Application`,
+  account `796988593450`, region `us-east-1`. Reached `DELETE_COMPLETE` for all 44 resources (the
+  `AWS::BedrockAgentCore::Harness` again the slowest, ~2.5 minutes). Confirmed via
   `aws cloudformation describe-stacks` (`ValidationError: ... does not exist`) and `list-stacks`
   (no `spike-agui*` stack in `CREATE_COMPLETE`/`UPDATE_COMPLETE`). No resources from this spike
   remain deployed.
