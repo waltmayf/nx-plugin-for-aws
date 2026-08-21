@@ -17,10 +17,10 @@ de-risk the generator design before it's built.
       `HttpAgent` / CopilotKit client.
 - [ ] A bring-your-own AG-UI client connects by URL alone.
 - [ ] Memory reconstruction (history/`ListEvents` after a dropped connection) is answered empirically.
-- [ ] The 29s API Gateway REST integration cap behaviour against a held SSE response is answered empirically.
-- [ ] The route-registration mechanism for attaching a non-tRPC route to the operation-driven
+- [x] The 29s API Gateway REST integration cap behaviour against a held SSE response is answered empirically.
+- [x] The route-registration mechanism for attaching a non-tRPC route to the operation-driven
       REST API is prototyped (Q4).
-- [ ] Async-kickoff feasibility for turns beyond the connection caps is answered empirically (Q6).
+- [x] Async-kickoff feasibility for turns beyond the connection caps is answered empirically (Q6).
 
 ## Child spikes
 
@@ -29,9 +29,9 @@ de-risk the generator design before it's built.
 | #6 | Deploy a Harness + hand-written `/agui` SSE route | **Answered (see below)** — deployed to sandbox, Harness invoked and responded |
 | #7 | Stock `HttpAgent` + bring-your-own AG-UI client both render the stream | Not started |
 | #8 | `history`/`ListEvents` reconstructs a turn after a dropped connection | Not started |
-| #9 | `/agui` SSE survival against the API Gateway REST 29s cap (Q6) | Not started |
-| #10 | AG-UI route registration on the operation-driven REST API (Q4) | **Answered (see below)** — prototyped and synths clean |
-| #11 | Async invocation kickoff for turns beyond the connection caps (Q6) | Not started |
+| #9 | `/agui` SSE survival against the API Gateway REST 29s cap (Q6) | **Answered (see below)** — hard abort at ~29s, no clean signal |
+| #10 | AG-UI route registration on the operation-driven REST API (Q4) | **Answered (see below)** — deployed, IAM-authenticated `POST /agui` streams a real 200 end-to-end |
+| #11 | Async invocation kickoff for turns beyond the connection caps (Q6) | **Answered (see below)** — direct async Lambda invoke completes a full turn with no client connection |
 | #12 | `InvokeHarness` tool-call stream shape for future `TOOL_CALL_*` (Q5) | **Answered from SDK types (see below)**; empirical confirmation pending deploy |
 
 ## Plan
@@ -184,9 +184,94 @@ the evidence, not a live environment.
 
 ### Q6 — 29s cap behaviour / async kickoff feasibility
 
-_(pending deploy — see #6 above for what was deployed and then torn down; a future run should
-redeploy to exercise the 29s cap and async-kickoff questions, per the run scope in the dispatch that
-added #6's findings)_
+**Answered.** Redeployed the #6 stack (same recipe, new sandbox stack
+`spike-agui-harness-infra-sandbox-Application`, account `796988593450`, region `us-east-1`,
+`ChatApiEndpoint` `https://zpngz396za.execute-api.us-east-1.amazonaws.com/prod/`, deployed
+2026-08-21 ~03:10–03:13 UTC).
+
+**Bug found and fixed along the way:** `actorIdFromEvent` in
+`chat-api-agui/handler.ts` returned the raw IAM principal ARN
+(`arn:aws:sts::...:assumed-role/.../session`) unmodified, which is embedded in
+`runtimeSessionId`. `InvokeHarnessCommand` rejects that with a client-fault
+`ValidationException` (`runtimeSessionId` only allows `[a-zA-Z0-9][a-zA-Z0-9-_]*`, and ARNs
+contain `:`/`/`), so **every IAM-authenticated `/agui` call failed before reaching the Harness**
+until this was fixed (sanitizing non-matching characters to `-`; see commit
+`fix(spike): sanitize IAM ARN before using it as a Harness runtimeSessionId`). This is a real
+finding for the generator: any design that derives `runtimeSessionId`/`actorId` from IAM identity
+must sanitize it first — Cognito/JWT `sub` claims (the other auth mode) don't have this problem
+since they're already alphanumeric-ish.
+
+**Client-side measurement gotcha:** an initial timing script built on `aws4fetch`'s `fetch()`
+wrapper reported wildly inflated latencies (25–30s) for requests that server-side X-Ray traces
+showed completed in ~150ms end-to-end. Switching to Node's raw `https.request` (with explicit
+`socket`/`lookup`/`connect`/`secureConnect` timing marks) reproduced the fast, correct timings —
+so the discrepancy was an artifact of this sandbox's `fetch()`/undici stack, not of API Gateway or
+the Harness. **All timings below are from the raw `https.request` client**, cross-checked against
+CloudWatch Logs and X-Ray.
+
+**29s cap behaviour (#9):** with the bug fixed, a short prompt ("Say PONG.") gets a clean,
+progressively-streamed 200 response (headers at ~4–8s, then a handful of SSE chunks arriving over
+the next few hundred ms, `RUN_STARTED` → `TEXT_MESSAGE_*` → `RUN_FINISHED`) — confirming
+`responseTransferMode: ResponseTransferMode.STREAM` really does deliver bytes progressively
+through a REST API Gateway Lambda proxy integration for a fast turn, and that the IAM-authenticated
+route works end-to-end (empirical confirmation of #10's route-registration mechanism, not just
+`cdk synth`).
+
+For a turn engineered to run long (prompt: "Write an extremely long, detailed short story of at
+least 4000 words about a lighthouse keeper..."), the client received progressively-streamed
+`TEXT_MESSAGE_CONTENT` deltas exactly as expected — until, **at 29048ms after the request was
+sent, the TCP connection was abruptly torn down**: `res.on('aborted')` fired, `res.complete ===
+false`, the socket closed with `hadError: false`, and **no error frame, no `RUN_ERROR` AG-UI
+event, no HTTP-level status — the connection is simply severed mid-stream** (the final delta the
+client saw was an in-progress sentence, not even a complete JSON object boundary in some runs).
+This is a harder failure mode than a clean timeout: nothing in the AG-UI event stream itself
+signals "this run did not finish" — a naive client-side AG-UI consumer would just see the stream
+end. Repeated across two separate long-prompt runs, the abort landed at 29043–29048ms both times —
+consistent with the well-documented **hard, non-configurable 29-second REST API Gateway
+integration timeout**, which applies regardless of the Lambda's own timeout and regardless of
+response streaming being enabled.
+
+**Resource-waste finding (feeds #11):** CloudWatch confirms the **Lambda invocation itself keeps
+running for its full configured timeout (90s in this spike) after the client connection has
+already been killed at 29s** — `REPORT ... Duration: 90000.00 ms ... Status: timeout` for both
+long-prompt runs. The handler has no mechanism to detect the client disconnect (no `AbortController`
+wired to the `InvokeHarnessCommand` stream), so it keeps consuming the Harness stream and writing
+into a `Writable` that nothing is reading from anymore, burning Lambda **and** Harness invocation
+cost for up to a minute past the point where the result became undeliverable. **Recommendation for
+the generator:** the handler should race the Harness stream against a deadline well under 29s
+(e.g. ~25s) and either finish or explicitly abort — both to stop wasting compute and because
+continuing past that point can never reach the client through this code path anyway.
+
+**Async-kickoff feasibility (#11) — design sketch:** given the above, any turn expected to run
+longer than ~25s cannot be served by keeping the client's HTTP connection open — the connection
+will be killed by AWS with no way to signal completion afterward. Two viable shapes:
+
+1. **Handoff-on-approach:** the synchronous `/agui` handler races the Harness stream against a
+   ~25s deadline. If it finishes first, stream normally (as today). If the deadline hits first,
+   emit one final synthetic AG-UI event (e.g. a custom `RUN_ERROR`/handoff event carrying a resume
+   token) *before* the connection would be killed, and separately keep the Harness turn running
+   in the background (see below) so the client can reconnect/poll and pick up the rest via
+   `history`/`ListEvents` reconstruction (#8) once it's done.
+2. **Always-async:** never await the Harness turn inline. The `/agui` handler kicks off the turn
+   (Step Functions, SQS + worker Lambda, or a second async Lambda invocation) and immediately
+   returns a `RUN_STARTED`-only response; the client is expected to reconnect (e.g. long-poll a
+   status endpoint, or a second SSE connection that tails `ListEvents`) to consume the rest. This
+   fully decouples client connection lifetime from Harness turn duration at the cost of needing a
+   client-side reconnect/resume protocol from day one, not just as a fallback.
+
+**Empirical smoke test:** invoked the deployed `AguiHandler` Lambda function **directly (bypassing
+API Gateway entirely)** via `aws lambda invoke --invocation-type Event` with a synthetic
+`APIGatewayProxyEvent`-shaped payload. This returned `{"StatusCode": 202}` immediately (no waiting
+for a result), and the invocation it kicked off ran independently to completion — `REPORT ...
+Duration: 54539.01 ms` with **no timeout status**, i.e. a full Harness turn (`InvokeHarnessCommand`
++ Converse→AG-UI mapping) completed successfully with **zero live client connection** for the
+entire 54.5s. This directly confirms the core premise of both handoff shapes above: a Harness turn
+can be kicked off and run to completion fully decoupled from any HTTP connection. The one gap this
+smoke test doesn't close: the handler as written only writes AG-UI events into the (in this case,
+discarded) HTTP response stream — a real async-kickoff implementation needs those events routed to
+a durable sink (DynamoDB/EventBridge, or leaning on the Harness's own session Memory + `ListEvents`
+reconstruction from #8) instead, which is generator-design work, not something this spike needed
+to build.
 
 ### Q7 — Article alignment
 
@@ -201,3 +286,10 @@ _(pending deploy / cross-check against the builder.aws.com article)_
   via `aws cloudformation describe-stacks` returning `ValidationError: ... does not exist` and
   `list-stacks` returning no `spike-agui*` stack in `CREATE_COMPLETE`/`UPDATE_COMPLETE`. No resources
   from this spike remain deployed.
+- **2026-08-21 ~03:28–03:31 UTC** — `cdk destroy --force "spike-agui-harness-infra-sandbox/*"` against
+  the redeploy used for the #9/#10/#11 findings above, stack `spike-agui-harness-infra-sandbox-Application`,
+  account `796988593450`, region `us-east-1`. Reached `DELETE_COMPLETE` for all 44 resources (the
+  `AWS::BedrockAgentCore::Harness` again the slowest, ~2 minutes). Confirmed via
+  `aws cloudformation describe-stacks` (`ValidationError: ... does not exist`) and `list-stacks`
+  (no `spike-agui*` stack in `CREATE_COMPLETE`/`UPDATE_COMPLETE`). No resources from this spike
+  remain deployed.
