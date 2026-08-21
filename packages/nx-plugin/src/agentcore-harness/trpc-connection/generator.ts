@@ -9,7 +9,7 @@ import {
   OverwriteStrategy,
   type Tree,
 } from '@nx/devkit';
-import { readAgentCoreHarnessMetadata } from '../../agentcore-harness/generator';
+import { readAgentCoreHarnessMetadata } from '../generator';
 import { addTsDependencies } from '../../utils/add-dependencies';
 import { addDestructuredImport, applyGritQL } from '../../utils/ast';
 import { declareDependencies } from '../../utils/declared-dependencies';
@@ -152,10 +152,13 @@ const registerHistoryProcedure = async (
     esm ? './procedures/history.js' : './procedures/history',
   );
 
+  // Appends after the last property rather than rewriting the whole `{ $props
+  // }` list with `=>`: GritQL binds a property list to its trailing comma
+  // too, so re-emitting `{ $props, history }` would duplicate it.
   await applyGritQL(
     tree,
     routerPath,
-    '`router({ $props })` => `router({ $props, history })` where { $props <: not contains `history` }',
+    '`router({ $props })` => `router({ $props })` where { $props <: not contains `history`, $props <: [$..., $last], $last += `, history` }',
   );
 };
 
