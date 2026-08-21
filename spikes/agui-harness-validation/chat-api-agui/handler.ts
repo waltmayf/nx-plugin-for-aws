@@ -33,8 +33,11 @@ function sessionIdFor(actorId: string, threadId: string): string {
 
 // IAM inbound has no JWT `sub`; the caller's IAM principal ARN is the closest
 // server-derived identity available, and is never taken from the request body.
+// Sanitized because runtimeSessionId (which embeds this) only allows
+// [a-zA-Z0-9-_], but ARNs contain ':' and '/'.
 function actorIdFromEvent(event: APIGatewayProxyEvent): string {
-  return event.requestContext.identity?.userArn ?? 'anonymous';
+  const arn = event.requestContext.identity?.userArn ?? 'anonymous';
+  return arn.replace(/[^a-zA-Z0-9_-]/g, '-');
 }
 
 export const handler = awslambda.streamifyResponse(
