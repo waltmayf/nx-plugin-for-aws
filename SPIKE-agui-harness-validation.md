@@ -13,9 +13,9 @@ de-risk the generator design before it's built.
 ## Exit criteria (from Epic #5)
 
 - [x] A Harness (Korey's generator) is deployed and invokable.
-- [ ] A hand-written AG-UI SSE route on a generated tRPC API renders in a stock `@ag-ui/client`
+- [x] A hand-written AG-UI SSE route on a generated tRPC API renders in a stock `@ag-ui/client`
       `HttpAgent` / CopilotKit client.
-- [ ] A bring-your-own AG-UI client connects by URL alone.
+- [x] A bring-your-own AG-UI client connects by URL alone.
 - [x] Memory reconstruction (history/`ListEvents` after a dropped connection) is answered empirically.
 - [x] The 29s API Gateway REST integration cap behaviour against a held SSE response is answered empirically.
 - [x] The route-registration mechanism for attaching a non-tRPC route to the operation-driven
@@ -27,7 +27,7 @@ de-risk the generator design before it's built.
 | # | Title | Status |
 |---|---|---|
 | #6 | Deploy a Harness + hand-written `/agui` SSE route | **Answered (see below)** — deployed to sandbox, Harness invoked and responded |
-| #7 | Stock `HttpAgent` + bring-your-own AG-UI client both render the stream | Not started |
+| #7 | Stock `HttpAgent` + bring-your-own AG-UI client both render the stream | **Answered (see below)** — both a stock `@ag-ui/client` `HttpAgent` and a zero-dependency raw-fetch client reconstruct a full turn against the deployed `/agui` route |
 | #8 | `history`/`ListEvents` reconstructs a turn after a dropped connection | **Answered (see below)** — works iff the backend turn completes; a session-id bug found along the way breaks thread isolation for IAM callers |
 | #9 | `/agui` SSE survival against the API Gateway REST 29s cap (Q6) | **Answered (see below)** — hard abort at ~29s, no clean signal |
 | #10 | AG-UI route registration on the operation-driven REST API (Q4) | **Answered (see below)** — deployed, IAM-authenticated `POST /agui` streams a real 200 end-to-end |
@@ -181,6 +181,73 @@ purely a spike-execution-environment note; it has no bearing on the generator de
 
 Stack was torn down after this finding was recorded (see Teardown log) — this section captures
 the evidence, not a live environment.
+
+### #7 — stock client / bring-your-own rendering
+
+**Answered — both exit-criteria boxes confirmed.** Redeployed the #6/#9/#8 stack again (same
+recipe, new sandbox stack `spike-agui-7-infra-sandbox-Application`, account `796988593450`, region
+`us-east-1`, `ChatApiEndpoint` `https://93n0bwds0h.execute-api.us-east-1.amazonaws.com/prod/`,
+deployed 2026-08-21 ~06:15 UTC), no code changes to the spike's route/mapper — this was purely a
+client-side validation pass against the same `/agui` contract already exercised by #9/#8.
+
+**Environment note:** this run hit the same "pnpm relocates its virtual store outside the project
+tree on a long path, breaking Node's ESM upward `node_modules` resolution for deeply-nested
+dependencies (`Cannot find package 'typescript'` from inside `@nx/js`)" issue as prior runs implied
+but hadn't fully diagnosed — it's an artifact of this sandbox's global `npm_config_virtual_store_dir`
+env var pointing outside whatever project directory is in use. Fix: override it back to a
+project-local path for every `pnpm`/`nx` invocation, e.g. `npm_config_virtual_store_dir=node_modules/.pnpm pnpm install`.
+Also needed this session: `apt-get install -y python3 make g++` (for `node-pty`'s native build,
+an unrelated root devDependency) before `pnpm install` would succeed at all. Neither is a generator
+concern — both are one-time sandbox-container setup gaps, recorded here so a future run doesn't
+re-diagnose them from scratch.
+
+**Stock `@ag-ui/client` `HttpAgent` (first checkbox).** A completely vanilla `HttpAgent` from the
+published `@ag-ui/client@0.0.58` package, pointed at the deployed `/agui` URL with only an
+IAM-signing `fetch` override (via `aws4fetch`, needed purely because the route is
+IAM-authenticated — orthogonal to the AG-UI wire contract itself) and a `threadId`, ran a full turn
+end-to-end with **zero custom event-parsing code**:
+
+```js
+const agent = new HttpAgent({ url: AGUI_URL, threadId, fetch: (u, init) => aws.fetch(u, init) });
+agent.addMessage({ id: 'msg_1', role: 'user', content: 'Say the word PONG and nothing else.' });
+const result = await agent.runAgent();
+```
+
+`agent.subscribe(...)` observed the exact expected AG-UI sequence — `RUN_STARTED` →
+`TEXT_MESSAGE_START` → `TEXT_MESSAGE_CONTENT` (`delta: "PONG"`) → `TEXT_MESSAGE_END` →
+`RUN_FINISHED` — and `runAgent()`'s resolved `newMessages` / the agent's own `.messages` array both
+show the correctly reconstructed assistant message (`{ role: 'assistant', content: 'PONG' }`),
+using nothing but the library's standard `AbstractAgent` message-accumulation logic (`defaultApplyEvents`).
+This is a clean, unmodified stock client rendering the hand-written mapper's output with no
+impedance mismatch. Script: `spikes/agui-harness-validation/client-tests/test-http-agent.mjs`.
+
+**Bring-your-own client (second checkbox).** A second script imports **no AG-UI package at
+all** — not `@ag-ui/client`, not `@ag-ui/core`, nothing from this repo — and drives a full turn with
+only `fetch` (via `aws4fetch` for the same IAM-signing reason above) plus ~10 lines of manual
+`data: <json>\n\n` SSE-frame splitting:
+
+```js
+const res = await aws.fetch(AGUI_URL, { method: 'POST', headers: {...}, body });
+const reader = res.body.getReader();
+// split on "\n\n", parse the "data: " line as JSON — no library involved
+```
+
+Response: `status 200`, `content-type: text/event-stream`, and the exact same five-event sequence
+as the stock-client test, reconstructing `"PONG"` from the `TEXT_MESSAGE_CONTENT` deltas by hand.
+This directly confirms the wire contract really is a plain AG-UI SSE stream — nothing about
+rendering it depends on `@ag-ui/client`'s internals, a generated SDK, or any type shared with the
+server. Script: `spikes/agui-harness-validation/client-tests/bring-your-own.mjs`.
+
+**Scope note on auth:** both clients still had to sign requests for IAM (the route's actual
+configured auth mode, matching #9/#10's findings) — "connects by URL alone" is answered with
+respect to the *AG-UI wire contract* (no server-specific client code needed to parse the stream),
+not as a claim that the route is unauthenticated. IAM SigV4 signing is a generic, orthogonal
+concern any AWS API Gateway caller has, not something specific to this project's types or SDK.
+
+**CopilotKit UI:** not exercised this run — the two scripted clients above already give an
+unambiguous answer to both checkboxes (a real stock library and a zero-dependency raw client both
+render the stream correctly), so wiring up the full CopilotKit chat UI was judged not to add
+additional evidence for the remaining time budget.
 
 ### Q6 — 29s cap behaviour / async kickoff feasibility
 
