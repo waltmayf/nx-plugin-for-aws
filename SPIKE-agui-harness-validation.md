@@ -28,7 +28,7 @@ de-risk the generator design before it's built.
 |---|---|---|
 | #6 | Deploy a Harness + hand-written `/agui` SSE route | **Answered (see below)** — deployed to sandbox, Harness invoked and responded |
 | #7 | Stock `HttpAgent` + bring-your-own AG-UI client both render the stream | Not started |
-| #8 | `history`/`ListEvents` reconstructs a turn after a dropped connection | Not started |
+| #8 | `history`/`ListEvents` reconstructs a turn after a dropped connection | **Answered (see below)** — works iff the backend turn completes; a session-id bug found along the way breaks thread isolation for IAM callers |
 | #9 | `/agui` SSE survival against the API Gateway REST 29s cap (Q6) | **Answered (see below)** — hard abort at ~29s, no clean signal |
 | #10 | AG-UI route registration on the operation-driven REST API (Q4) | **Answered (see below)** — deployed, IAM-authenticated `POST /agui` streams a real 200 end-to-end |
 | #11 | Async invocation kickoff for turns beyond the connection caps (Q6) | **Answered (see below)** — direct async Lambda invoke completes a full turn with no client connection |
@@ -272,6 +272,62 @@ discarded) HTTP response stream — a real async-kickoff implementation needs th
 a durable sink (DynamoDB/EventBridge, or leaning on the Harness's own session Memory + `ListEvents`
 reconstruction from #8) instead, which is generator-design work, not something this spike needed
 to build.
+
+### #8 — Memory/`ListEvents` reconstruction after a dropped connection
+
+**Answered.** Redeployed the #6/#9 stack again (same recipe, new sandbox stack, account
+`796988593450`, region `us-east-1`, `ChatApiEndpoint`
+`https://hifv4f2967.execute-api.us-east-1.amazonaws.com/prod/`, deployed 2026-08-21 ~03:44–03:48
+UTC), with one addition: a `CfnOutput` exposing `harness.harness.attrMemoryManagedMemoryConfigurationArn`
+(the managed-Memory ARN the `agentcore-harness` generator's template already grants
+`CreateEvent`/`ListEvents`/`GetEvent`/`DeleteEvent`/`RetrieveMemoryRecords` on — to the Harness's own
+execution role, not the `/agui` Lambda's; this spike's sandbox IAM identity turned out to already
+carry `bedrock-agentcore:ListEvents` broadly, confirmed by getting a `ValidationException` — not
+`AccessDeniedException` — for a bogus `memoryId`, so no extra IAM grant was needed for this spike's
+`ListEvents` calls specifically).
+
+**Test 1 — client drops before the backend turn finishes (the long-story prompt from #9).** Sent the
+`>=4000 word lighthouse keeper` prompt, then `req.destroy()`d the client socket at exactly 3000ms
+(well before the ~29s hard cap and far before the backend would naturally finish). Waited 5s, then
+called `ListEvents` with the same `memoryId`/`sessionId`/`actorId` the handler would have derived.
+**Result: only the `USER` event was ever present — no `ASSISTANT` event, ever.** Cross-checked
+against CloudWatch: both long-prompt invocations from this session (the aborted one and the earlier
+#9 run) show `REPORT ... Duration: 90000.00 ms ... Status: timeout` — the backend Lambda hit its
+own 90s configured timeout without the Strands/Harness agent loop ever completing, and **the
+assistant's message is committed to Memory only once, atomically, when the agent loop finishes** —
+not incrementally per delta. If the backend turn never finishes, Memory reconstruction has nothing
+to recover; the user's message is the permanent high-water mark of that conversation.
+
+**Test 2 — client drops but the backend turn finishes fine.** Sent a fast prompt ("Say PONG and
+nothing else."), destroyed the client socket the instant response headers arrived (before reading
+any body — the client saw literally nothing of the answer). Backend `REPORT` showed
+`Duration: 3909.02 ms` (no timeout). Polling `ListEvents` **3 seconds after the drop already showed
+both events**: the `USER` message and a complete `ASSISTANT` event — `{"message": {"role":
+"assistant", "content": [{"text": "PONG"}], "metadata": {"usage": {...}, "metrics": {"latencyMs":
+1417, ...}}}}`, i.e. the full text plus token-usage/latency metadata in one shot, not SSE-shaped
+deltas. **This is a clean, fast, complete answer to #8's exit criterion**: `ListEvents` (filtered to
+`role: ASSISTANT`, most-recent-first) reconstructs a dropped turn's answer within a few seconds of
+the backend completing, decoupled from the client's connection lifetime — directly validating the
+"handoff-on-approach"/"always-async" designs sketched under #11's Q6 findings above. A reconnecting
+client (or the resume flow itself) can safely poll `ListEvents` rather than needing any
+purpose-built resume/streaming side-channel.
+
+**Bug found along the way (real, generalizes beyond this spike): session-id truncation collapses
+distinct threads for IAM callers.** `sessionIdFor` in `chat-api-agui/handler.ts` builds
+`runtimeSessionId` as `` `${actorId}_${threadId}`.slice(0, 100).padEnd(33, '0') ``. For IAM-authenticated
+callers, `actorId` is the sanitized full assumed-role ARN (see #9's finding) — in this deployment,
+157 characters on its own. `.slice(0, 100)` is therefore satisfied entirely by the `actorId` prefix
+and **the `_${threadId}` suffix is silently dropped from every IAM-authenticated call**, regardless
+of the actual thread. Consequence, confirmed empirically: `ListEvents` for a *second*, unrelated
+thread (`thread_mem_short_0002`) came back polluted with the *first* thread's events
+(`thread_mem_test_0001`, the lighthouse-keeper prompt) because both derived the identical 100-character
+`sessionId` string — every conversation from the same IAM caller shares one Memory session, which
+breaks conversation isolation for anyone using IAM auth (Cognito/JWT `sub` actorIds are short enough
+that this specific truncation is less likely to bite, but the underlying pattern — concatenate then
+truncate — is unsafe for any long `actorId`/`threadId` pair). **Recommendation for the generator:**
+derive `runtimeSessionId` by hashing/truncating `actorId` and `threadId` independently before
+concatenating (e.g. a fixed-width hash of each half), never by truncating the already-joined
+string — this is a correctness bug to fix in the eventual generator code, not just a spike artifact.
 
 ### Q7 — Article alignment
 

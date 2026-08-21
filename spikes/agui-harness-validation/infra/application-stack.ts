@@ -4,7 +4,7 @@
  */
 import * as path from 'node:path';
 import * as url from 'node:url';
-import { Duration, Stack, StackProps } from 'aws-cdk-lib';
+import { CfnOutput, Duration, Stack, StackProps } from 'aws-cdk-lib';
 import { AuthorizationType, LambdaIntegration, ResponseTransferMode } from 'aws-cdk-lib/aws-apigateway';
 import { Runtime, Tracing } from 'aws-cdk-lib/aws-lambda';
 import { NodejsFunction, OutputFormat } from 'aws-cdk-lib/aws-lambda-nodejs';
@@ -52,5 +52,12 @@ export class ApplicationStack extends Stack {
       new LambdaIntegration(aguiHandler, { responseTransferMode: ResponseTransferMode.STREAM }),
       { authorizationType: AuthorizationType.IAM },
     );
+
+    // Spike-only: expose the Harness's managed-memory ARN so the #8 spike
+    // (Memory/ListEvents reconstruction) can extract the memoryId for a
+    // direct ListEvents/GetEvent CLI call after the deploy.
+    new CfnOutput(this, 'ManagedMemoryArn', {
+      value: harness.harness.attrMemoryManagedMemoryConfigurationArn,
+    });
   }
 }
