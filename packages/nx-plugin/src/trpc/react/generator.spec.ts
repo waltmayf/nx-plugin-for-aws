@@ -487,9 +487,7 @@ export function Main() {
       );
       expect(providerAfter).toEqual(providerBefore);
       // Registered exactly once, not once per re-run.
-      expect(
-        providerAfter?.split('myHarnessAgents').length,
-      ).toBeGreaterThan(1);
+      expect(providerAfter?.split('myHarnessAgents').length).toBeGreaterThan(1);
       expect(providerAfter?.match(/useAguiMyHarness\(\)/g)?.length).toBe(1);
     });
   });
