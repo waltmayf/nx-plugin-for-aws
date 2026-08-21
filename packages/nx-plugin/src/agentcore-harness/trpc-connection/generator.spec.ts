@@ -124,7 +124,7 @@ describe('agentcore-harness#trpc-connection generator', () => {
 
   const setupHarnessConstruct = (harnessNameKebabCase = 'my-harness') => {
     tree.write(
-      `packages/common/constructs/src/app/agentcore-harness/${harnessNameKebabCase}/${harnessNameKebabCase}.ts`,
+      `packages/common/constructs/src/app/harnesses/${harnessNameKebabCase}/${harnessNameKebabCase}.ts`,
       `export class MyHarness {}\n`,
     );
   };

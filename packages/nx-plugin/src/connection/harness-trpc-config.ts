@@ -83,7 +83,7 @@ export const addAguiRouteToApi = async (
     SHARED_CONSTRUCTS_DIR,
     'src',
     'app',
-    'agentcore-harness',
+    'harnesses',
     options.harnessNameKebabCase,
     `${options.harnessNameKebabCase}.ts`,
   );

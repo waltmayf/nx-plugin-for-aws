@@ -1,7 +1,7 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
 exports[`agentcore-harness#trpc-connection generator > adds an addAguiRoute method to the api CDK construct > api-construct.ts 1`] = `
-"import { MyHarness } from '../agentcore-harness/my-harness/my-harness.js';
+"import { MyHarness } from '../harnesses/my-harness/my-harness.js';
 import { NodejsFunction, OutputFormat } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as url from 'url';
 import {
