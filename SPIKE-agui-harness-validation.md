@@ -32,7 +32,7 @@ de-risk the generator design before it's built.
 | #9 | `/agui` SSE survival against the API Gateway REST 29s cap (Q6) | **Answered (see below)** — hard abort at ~29s, no clean signal |
 | #10 | AG-UI route registration on the operation-driven REST API (Q4) | **Answered (see below)** — deployed, IAM-authenticated `POST /agui` streams a real 200 end-to-end |
 | #11 | Async invocation kickoff for turns beyond the connection caps (Q6) | **Answered (see below)** — direct async Lambda invoke completes a full turn with no client connection |
-| #12 | `InvokeHarness` tool-call stream shape for future `TOOL_CALL_*` (Q5) | **Answered from SDK types (see below)**; empirical confirmation pending deploy |
+| #12 | `InvokeHarness` tool-call stream shape for future `TOOL_CALL_*` (Q5) | **Answered (see below)** — SDK types + now empirically confirmed with a real `shell`-tool-triggering prompt against the deployed Harness |
 
 ## Plan
 
@@ -112,8 +112,31 @@ cleaner than patching the shared default.
 ### Q5 — Tool-call stream shape
 
 **Answered from the AWS SDK's TypeScript types** (`@aws-sdk/client-bedrock-agentcore@3.1111.0`),
-pending empirical confirmation once a Harness with `allowedTools` is actually invoked with a
-tool-triggering prompt:
+**and now empirically confirmed** against the deployed #7 stack (`allowedTools: ['@builtin']`),
+which grants the Strands built-in `shell` tool:
+
+Prompt: `"What is the current date and time right now? Use a tool if you have one available."`,
+sent through the same `bring-your-own.mjs` script used for #7. The mapper's live output on the
+`/agui` stream was exactly the shape predicted below:
+
+```
+TOOL_CALL_START { toolCallId: "tooluse_SesAzTFnx1OiNPF8zv1tJn", toolCallName: "shell" }
+TOOL_CALL_ARGS  { toolCallId: "tooluse_...", delta: "" }
+TOOL_CALL_ARGS  { toolCallId: "tooluse_...", delta: "{\"comman" }
+TOOL_CALL_ARGS  { toolCallId: "tooluse_...", delta: "d\": \"date" }
+TOOL_CALL_ARGS  { toolCallId: "tooluse_...", delta: " -" }
+TOOL_CALL_ARGS  { toolCallId: "tooluse_...", delta: "u\"}" }
+TOOL_CALL_END   { toolCallId: "tooluse_..." }
+```
+
+concatenating the `TOOL_CALL_ARGS` deltas reconstructs valid JSON (`{"command": "date -u"}`), and
+the run finished with a normal text answer ("...August 21, 2026 at 06:25:03 UTC") derived from the
+tool's result — confirming the whole tool-use round-trip (Harness → mapper → AG-UI stream) works,
+not just the mapper's unit-tested synthetic sequence. This wasn't captured against a raw
+`contentBlockStart.start.toolUse` log line (the handler doesn't log the raw Converse stream), but
+the `toolUseId`/`name` on `TOOL_CALL_START` and the partial-JSON `TOOL_CALL_ARGS` deltas are only
+producible by the mapper's documented handling of exactly those SDK fields, so this is a direct
+empirical exercise of the code path, not just a plausible-looking coincidence.
 
 `InvokeHarnessStreamOutput` is a Converse-shaped discriminated union — `messageStart`,
 `contentBlockStart`, `contentBlockDelta`, `contentBlockStop`, `messageStop`, `metadata`, plus error
