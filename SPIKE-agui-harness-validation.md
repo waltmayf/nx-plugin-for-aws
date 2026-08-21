@@ -2,7 +2,9 @@
 
 **Tracking:** Epic #5 (child spikes #6–#12)
 **Reference:** `DESIGN-react-agentcore-harness-connection.md`
-**Status:** In progress
+**Status:** All 7 exit-criteria checkboxes have empirical evidence (see below). Q7
+(builder.aws.com article alignment) remains open as a non-blocking nice-to-have — it isn't one of
+the epic's 7 exit criteria.
 
 This is the running findings doc for Epic #5. It records what was built, deployed, and
 observed, and answers the open questions (Q4/Q5/Q6/Q7, §12 of the design doc) empirically.
@@ -446,3 +448,12 @@ _(pending deploy / cross-check against the builder.aws.com article)_
   `aws cloudformation describe-stacks` (`ValidationError: ... does not exist`) and `list-stacks`
   (no `spike-agui*` stack in `CREATE_COMPLETE`/`UPDATE_COMPLETE`). No resources from this spike
   remain deployed.
+- **2026-08-21 ~06:26–06:32 UTC** — `cdk destroy --force "spike-agui-7-infra-sandbox/*"` against the
+  redeploy used for the #7/Q5 findings above, stack `spike-agui-7-infra-sandbox-Application`, account
+  `796988593450`, region `us-east-1`. Reached `DELETE_COMPLETE` for all 44 resources (the
+  `AWS::BedrockAgentCore::Harness` again the slowest, ~5 minutes this time). Confirmed via
+  `aws cloudformation describe-stacks` (`ValidationError: ... does not exist`) and `list-stacks`
+  (no `spike-agui*` stack in `CREATE_COMPLETE`/`UPDATE_COMPLETE`). No resources from this spike
+  remain deployed. This scratch workspace used the `@spike-agui-7` package scope (differs from
+  earlier runs' `@spike-agui-harness`, since it was scaffolded fresh under a new directory name —
+  cosmetic only, no bearing on the findings).
