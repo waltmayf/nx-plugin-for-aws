@@ -1,0 +1,95 @@
+import {
+  BedrockAgentCoreClient,
+  ListEventsCommand,
+} from '@aws-sdk/client-bedrock-agentcore';
+import { z } from 'zod';
+import { actorIdFromEvent, runtimeSessionIdFor } from '../agui/session<% if (esm) { %>.js<% } %>';
+import { publicProcedure } from '../init<% if (esm) { %>.js<% } %>';
+
+const client = new BedrockAgentCoreClient({});
+
+// A Strands-backed Harness's Memory events store each turn as a
+// JSON-stringified turn record — `conversational.content.text` is that
+// string, not the message text itself. Unwrap `message.content[].text`;
+// fall back to the raw string for a payload shape that turns out not to be
+// this record (e.g. a future Harness runtime with a simpler content shape).
+function textFromContent(content: unknown): string {
+  const raw =
+    content &&
+    typeof content === 'object' &&
+    'text' in content &&
+    typeof content.text === 'string'
+      ? content.text
+      : '';
+  if (!raw) return '';
+  try {
+    const parts = JSON.parse(raw)?.message?.content;
+    if (Array.isArray(parts)) {
+      return parts
+        .filter(
+          (part): part is { text: string } => typeof part?.text === 'string',
+        )
+        .map((part) => part.text)
+        .join('');
+    }
+  } catch {
+    // Not the JSON turn-record shape — use the raw string as-is.
+  }
+  return raw;
+}
+
+const HistoryInputSchema = z.object({ threadId: z.string() });
+
+const HistoryMessageSchema = z.object({
+  role: z.enum(['user', 'assistant']),
+  content: z.string(),
+});
+
+const HistoryOutputSchema = z.object({
+  messages: z.array(HistoryMessageSchema),
+});
+
+/**
+ * Reconstructs a conversation from AgentCore Memory. The Harness commits each
+ * exchange to Memory as soon as it completes — independently of whether a
+ * client is still connected to `/agui` — so this survives a dropped
+ * connection, a page reload, or a check-in from another device. Scoped to the
+ * caller's own actor id (server-derived, same as `/agui`), never a
+ * client-supplied one.
+ */
+export const history = publicProcedure
+  .input(HistoryInputSchema)
+  .output(HistoryOutputSchema)
+  .query(async ({ input, ctx }) => {
+    const actorId = actorIdFromEvent(ctx.event);
+    const sessionId = runtimeSessionIdFor(actorId, input.threadId);
+
+    const { events } = await client.send(
+      new ListEventsCommand({
+        memoryId: process.env.MEMORY_ARN!,
+        actorId,
+        sessionId,
+        includePayloads: true,
+        maxResults: 100,
+      }),
+    );
+
+    // ListEvents returns events most-recent-first; the transcript needs the
+    // opposite order to render oldest-to-newest.
+    const messages = (events ?? [])
+      .slice()
+      .sort(
+        (a, b) =>
+          (a.eventTimestamp?.getTime() ?? 0) -
+          (b.eventTimestamp?.getTime() ?? 0),
+      )
+      .flatMap((event) => event.payload ?? [])
+      .flatMap((payload) => (payload.conversational ? [payload.conversational] : []))
+      .map((turn) => ({
+        role:
+          turn.role === 'ASSISTANT' ? ('assistant' as const) : ('user' as const),
+        content: textFromContent(turn.content),
+      }));
+
+    return { messages };
+  });
