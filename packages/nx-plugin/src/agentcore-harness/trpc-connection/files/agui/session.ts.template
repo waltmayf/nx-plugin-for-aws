@@ -29,7 +29,9 @@ export function runtimeSessionIdFor(actorId: string, threadId: string): string {
 // which otherwise throws before falling through to the 'anonymous' default.
 export function actorIdFromEvent(event: APIGatewayProxyEvent): string {
   const claims = (
-    event.requestContext?.authorizer as { claims?: { sub?: string } } | undefined
+    event.requestContext?.authorizer as
+      | { claims?: { sub?: string } }
+      | undefined
   )?.claims;
   const id = claims?.sub ?? event.requestContext?.identity?.userArn ?? 'anonymous';
   return id.replace(/[^a-zA-Z0-9_-]/g, '-');
