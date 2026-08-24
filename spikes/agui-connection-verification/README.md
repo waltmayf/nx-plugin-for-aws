@@ -18,9 +18,16 @@ this branch's built plugin — i.e. exactly what a user gets by cloning `main` t
 A real instance is deployed to account `796988593450` / `us-east-1`:
 
 - **Website (CloudFront):** https://d3m4pu7bjp9we9.cloudfront.net
-- Self-signup is enabled — click **"Create an account"** on the sign-in page, verify your
-  email, then set up an authenticator-app MFA code (Cognito's `Mfa.REQUIRED` default from the
-  `ts#website#auth` generator — any TOTP app works, e.g. Google Authenticator).
+- Self-signup is enabled — click **"Create an account"** on the sign-in page and verify your
+  email to sign in. As of 2026-08-24, MFA is **off** on this live pool (confirmed via
+  `aws cognito-idp get-user-pool-mfa-config`: `MfaConfiguration: OFF`) — no authenticator-app
+  setup step is needed to complete sign-up, unlike the `ts#website#auth` generator's
+  `Mfa.REQUIRED` default. The CDK code (`user-identity.ts.template`) still declares
+  `Mfa.REQUIRED`; the live pool's MFA config was changed directly against the deployed
+  resource (`SetUserPoolMfaConfig`), not via a CDK redeploy, to unblock human verification of
+  this demo without touching the generator's default security posture. A future `cdk deploy`
+  of this stack won't revert it unless the `Identity` construct's other props change and force
+  CloudFormation to reissue an update to the user pool resource.
 - After signing in, go to `/chat` and talk to the AgentCore Harness. Verified end-to-end
   2026-08-22 with `"Say the word PONG and nothing else."` → the CopilotKit UI rendered `PONG`,
   confirming the full path: browser → Cognito → SigV4 → `/agui` route → `InvokeHarness` →
