@@ -33,16 +33,13 @@ const sessionStubPath = path.join(
   dir,
   '.history.session-stub.generated-for-test.ts',
 );
-const initStubPath = path.join(
-  dir,
-  '.history.init-stub.generated-for-test.ts',
-);
+const initStubPath = path.join(dir, '.history.init-stub.generated-for-test.ts');
 const tempModulePath = path.join(dir, '.history.generated-for-test.ts');
 
 fs.writeFileSync(
   sessionStubPath,
   [
-    "export function actorIdFromEvent(): string {",
+    'export function actorIdFromEvent(): string {',
     "  return 'actor-1';",
     '}',
     '',
@@ -66,7 +63,12 @@ fs.writeFileSync(
   ].join('\n'),
 );
 
-const templatePath = path.join(dir, 'files', 'procedures', 'history.ts.template');
+const templatePath = path.join(
+  dir,
+  'files',
+  'procedures',
+  'history.ts.template',
+);
 const rendered = fs
   .readFileSync(templatePath, 'utf-8')
   .replace(/<% if \(esm\) \{ %>\.js<% \} %>/g, '')
