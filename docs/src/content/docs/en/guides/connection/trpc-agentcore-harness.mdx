@@ -76,7 +76,9 @@ For every request, the handler:
 
 Authentication follows whichever mode your tRPC API was generated with. Under **IAM** (default) the caller signs with SigV4 and the actor id comes from the IAM principal ARN (`event.requestContext.identity.userArn`); under **Cognito** the caller presents a bearer JWT and the actor id comes from the validated `sub` claim (`event.requestContext.authorizer.claims.sub`). In both cases authentication terminates at the API — the Harness itself is invoked with the Lambda's own IAM execution role, and the caller's token is never forwarded to it. Per-user scoping is enforced by this handler (the derived `actorId`), not by the Harness, so its deployment-time `auth: iam` setting is unchanged.
 
-The generated `history` tRPC query reads AgentCore Memory directly (`ListEvents`, scoped to the same server-derived actor id and session), returning the conversation as `{ messages: { role, content }[] }`. Because the Harness commits every exchange to Memory as it completes, `history` is the durable read path — a dropped connection, reload, or another device never loses a turn. The generated CopilotKit UI calls it on mount and after every run; a bring-your-own frontend can call it too, or ignore it.
+The generated `history` tRPC query reads AgentCore Memory directly (`ListEvents`, scoped to the same server-derived actor id and session) and reconstructs the **full** transcript, not just text: assistant tool calls become `toolCalls` on an assistant message, and their results (stored under role `USER` in Memory) become separate `tool` messages carrying a `toolCallId` that links back to the call. Because the Harness commits every exchange to Memory as it completes, `history` is the durable read path — a dropped connection, reload, or another device never loses a turn, tool-call chips included, so a reloaded conversation renders identically to the live stream. The generated CopilotKit UI calls it on mount and after every run; a bring-your-own frontend can call it too, or ignore it.
+
+Reloading only converges on that server transcript if the AG-UI agent instance handed to `CopilotKitProvider` is **stable** across renders — the generated `useAgui<HarnessName>` hook memoizes the agent, and (under `auth: iam`) `useSigV4`'s returned signing client is itself memoized so it doesn't change identity every render. An unstable agent gets torn down and rebuilt before `setMessages` from `history` ever reaches a render, producing an empty transcript on reload even though `/agui` and Memory are both working correctly. Keep this in mind if you swap in your own signing/auth hook in place of `useSigV4` — it must return a referentially stable object too.
 
 ## Infrastructure
 
@@ -524,6 +526,8 @@ const agent = new HttpAgent({
 ```
 
 Authenticate exactly as you would any other request to this API — SigV4 for `auth: iam`, a bearer JWT for `auth: cognito`. For durable, cross-device hydration, call the `history` tRPC procedure the same way you'd call any other procedure on this API.
+
+`history`'s messages include tool calls and their results, not just text — map them into your AG-UI client's message model as an assistant message carrying `toolCalls` (`[{ id, type: 'function', function: { name, arguments } }]`) followed by a `tool` message whose `toolCallId` matches that call's `id`, the same linkage `@ag-ui/client`'s own `Message` type expects. And whatever object you feed your client's `fetch`/signing dependency on, make sure it's referentially stable across renders (memoize it) — an agent instance that's recreated every render discards a `setMessages`-based hydration before it ever paints, which looks identical to `history` returning nothing even though it isn't.
 
 ## Local Development
 
