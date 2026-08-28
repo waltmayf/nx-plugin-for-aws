@@ -159,32 +159,40 @@ export const history = publicProcedure
       .flatMap((payload) =>
         payload.conversational ? [payload.conversational] : [],
       )
-      .flatMap((turn) => {
-        const { text, toolCalls, toolResults } = parseTurnContent(
-          turn.content,
-        );
+      .flatMap(
+        (
+          turn,
+        ): Array<
+          | { role: 'assistant'; content: string; toolCalls?: ParsedToolCall[] }
+          | { role: 'user'; content: string }
+          | { role: 'tool'; content: string; toolCallId: string }
+        > => {
+          const { text, toolCalls, toolResults } = parseTurnContent(
+            turn.content,
+          );
 
-        if (turn.role === 'ASSISTANT') {
-          return text || toolCalls.length
-            ? [
-                {
-                  role: 'assistant' as const,
-                  content: text,
-                  ...(toolCalls.length ? { toolCalls } : {}),
-                },
-              ]
-            : [];
-        }
+          if (turn.role === 'ASSISTANT') {
+            return text || toolCalls.length
+              ? [
+                  {
+                    role: 'assistant' as const,
+                    content: text,
+                    ...(toolCalls.length ? { toolCalls } : {}),
+                  },
+                ]
+              : [];
+          }
 
-        return [
-          ...(text ? [{ role: 'user' as const, content: text }] : []),
-          ...toolResults.map((result) => ({
-            role: 'tool' as const,
-            content: result.content,
-            toolCallId: result.toolCallId,
-          })),
-        ];
-      });
+          return [
+            ...(text ? [{ role: 'user' as const, content: text }] : []),
+            ...toolResults.map((result) => ({
+              role: 'tool' as const,
+              content: result.content,
+              toolCallId: result.toolCallId,
+            })),
+          ];
+        },
+      );
 
     return { messages };
   });
