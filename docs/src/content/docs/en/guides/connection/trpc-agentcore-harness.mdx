@@ -184,14 +184,14 @@ The Harness also requires Amazon Bedrock model access to be enabled in the targe
 
 ## Building the chat UI
 
-The website-side connection (step 2) wired the AG-UI plumbing into your website — the shared `<AguiProvider>` (already wrapping `<App />` in `main.tsx`), the `useAgui<HarnessName>` hook pointed at this API's `/agui` route, and a themed `src/components/copilot` module — but it does **not** add a chat component to any route. You render one, importing it from the generated `./components/copilot` module so your website's `ux` theme is applied.
+The website-side connection (step 2) wired the AG-UI plumbing into your website — the shared `<AguiProvider>` (already wrapping `<App />` in `main.tsx`) and the `useAgui<HarnessName>` hook pointed at this API's `/agui` route — but it does **not** add a chat component to any route. You render one yourself, importing the stock `<CopilotChat>` from `@copilotkit/react-core/v2`; the standard AG-UI frontend works against this project as-is, with no generated theming layer required.
 
 Two props drive it:
 
 - **`agentId`** — the Harness's name in kebab-case, the key returned by the generated `useAgui<HarnessName>` hook (`agentcore-harness` for the project above).
 - **`threadId`** — identifies the conversation. The hook hydrates the active thread from `history` on mount and after every run, so a reload or another device always restores the transcript from AgentCore Memory. Pass a **stable** id to make a conversation resumable; omit it to start a fresh thread. Wrapping the component in `key={threadId}` remounts it when the id changes, re-running the mount-time hydration so switching threads reloads that thread's history. Threads are scoped to the caller's server-derived actor id, so a user only ever sees their own conversations. (The <Link path="get_started/tutorials/dungeon-game/4">Dungeon Adventure tutorial</Link> uses this deterministic-`threadId` pattern to make each game route sharable and resumable.)
 
-`<CopilotChat>`, `<CopilotSidebar>` and `<CopilotPopup>` all take these same props for an inline chat, a docked panel, or a floating popup. See <Link path="guides/connection/react-agui#customising-the-look-and-feel">Customising the look and feel</Link> for the slot-based theming. This is the same generated frontend the <Link path="guides/connection/react-agui">React → AG-UI guide</Link> documents in full; the only difference is that the hook talks to your API's `/agui` route rather than an agent runtime directly.
+`<CopilotChat>`, `<CopilotSidebar>` and `<CopilotPopup>` all take these same props for an inline chat, a docked panel, or a floating popup. This is the same stock CopilotKit frontend the <Link path="guides/connection/react-agui">React → AG-UI guide</Link> documents in full; the only difference is that the hook talks to your API's `/agui` route rather than an agent runtime directly.
 
 Rather than hard-code a single `threadId`, the walkthrough below renders a **session picker** that lists a user's past conversations and opens each one — the shape most apps need.
 
@@ -390,9 +390,9 @@ Add the chat page. The website's generated `use<ApiName>` tRPC hook (here `useTr
 
 ```tsx title="packages/react-website/src/routes/chat.tsx"
 import '@copilotkit/react-core/v2/styles.css';
+import { CopilotChat } from '@copilotkit/react-core/v2';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { CopilotChat } from '../components/copilot';
 import { useTrpcApi } from '../hooks/useTrpcApi';
 
 export function ChatPage() {
@@ -504,7 +504,16 @@ With steps 1–5 complete, run one `deploy-sandbox` to ship everything — the D
 
 <NxCommands commands={['deploy-sandbox infra']} />
 
-Once deployed, open the website's CloudFront URL (a CDK output), sign up through Cognito, and the CopilotKit chat will stream from your Harness through the API's `/agui` route.
+Once deployed, open the website's CloudFront URL (a CDK output). The generated User Pool defaults to `AllowAdminCreateUserOnly: true` (no self-signup), so create your first user with the AWS CLI rather than a signup form — the username can't be email-shaped, since the pool uses email as an alias:
+
+```bash
+aws cognito-idp admin-create-user --user-pool-id <POOL_ID> --region <REGION> \
+  --username <name> --user-attributes Name=email,Value=<you@example.com> Name=email_verified,Value=true --message-action SUPPRESS
+aws cognito-idp admin-set-user-password --user-pool-id <POOL_ID> --region <REGION> \
+  --username <name> --password '<TempPass!123>' --permanent
+```
+
+Sign in with that username and password, and the CopilotKit chat will stream from your Harness through the API's `/agui` route.
 
 :::note[Local dev shares one partition]
 Under the `dev` target there's no authorizer, so `actorIdFromEvent` resolves to `anonymous` (the same fallback `history` uses locally) — every session is stored under that single partition. Per-user isolation takes effect against a deployed stack, where the API's authorizer supplies a real IAM principal or Cognito `sub`.
