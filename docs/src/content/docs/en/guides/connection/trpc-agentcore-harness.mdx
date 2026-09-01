@@ -193,6 +193,8 @@ Two props drive it:
 
 `<CopilotChat>`, `<CopilotSidebar>` and `<CopilotPopup>` all take these same props for an inline chat, a docked panel, or a floating popup. This is the same stock CopilotKit frontend the <Link path="guides/connection/react-agui">React → AG-UI guide</Link> documents in full; the only difference is that the hook talks to your API's `/agui` route rather than an agent runtime directly.
 
+`<CopilotChat>` fills its parent, so give it a container with an explicit height and width (e.g. `flex: 1` inside a sized flex layout); dropping it into an unsized box collapses the message input and footer to their minimum width. The example below wraps it accordingly.
+
 Rather than hard-code a single `threadId`, the walkthrough below renders a **session picker** that lists a user's past conversations and opens each one — the shape most apps need.
 
 ### List past conversations
@@ -416,7 +418,11 @@ export function ChatPage() {
   };
 
   return (
-    <div style={{ display: 'flex', gap: '1rem' }}>
+    // Stock CopilotChat fills its parent, so give it a sized flex container:
+    // the row needs an explicit height, and the chat needs `flex: 1` plus
+    // `minWidth: 0` / `minHeight: 0` so it can fill and shrink rather than
+    // collapsing to its content's minimum width.
+    <div style={{ display: 'flex', gap: '1rem', height: 'calc(100svh - 9rem)' }}>
       <aside>
         <button onClick={newChat}>New chat</button>
         <ul>
@@ -428,11 +434,13 @@ export function ChatPage() {
         </ul>
       </aside>
       {threadId && (
-        <CopilotChat
-          key={threadId}
-          agentId="agentcore-harness"
-          threadId={threadId}
-        />
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
+          <CopilotChat
+            key={threadId}
+            agentId="agentcore-harness"
+            threadId={threadId}
+          />
+        </div>
       )}
     </div>
   );
