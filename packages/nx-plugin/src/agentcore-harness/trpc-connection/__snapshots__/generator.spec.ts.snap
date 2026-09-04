@@ -1,9 +1,7 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`agentcore-harness#trpc-connection generator > adds an addAguiRoute method to the api CDK construct > api-construct.ts 1`] = `
-"import { MyHarness } from '../harnesses/my-harness/my-harness.js';
-import { NodejsFunction, OutputFormat } from 'aws-cdk-lib/aws-lambda-nodejs';
-import * as url from 'url';
+exports[`agentcore-harness#trpc-connection generator > adds an addAguiRoute method to the api CDK construct, streaming over a regional REST route for iam auth > api-construct.ts 1`] = `
+"import * as url from 'url';
 import {
   AuthorizationType,
   LambdaIntegration,
@@ -32,7 +30,10 @@ export class TestApi extends RestApi {
   private allowedOrigins = ['*'];
 
   constructor(scope, id, props) {
-    super(scope, id, { ...props });
+    super(scope, id, {
+      endpointConfiguration: { types: [EndpointType.REGIONAL] },
+      ...props,
+    });
     Aspects.of(this).add(new AddCorsPreflightAspect(() => this.allowedOrigins));
   }
 
@@ -49,31 +50,33 @@ export class TestApi extends RestApi {
   }
 
   /**
-   * Adds a POST /agui route backed by MyHarness,
+   * Adds an AG-UI streaming endpoint backed by MyHarness,
    * translating its Converse-style stream into AG-UI server-sent events.
    * Only 'messages' and 'threadId' are read from the request; every other
    * Harness field (systemPrompt, model, tools, allowedTools, skills,
    * actorId) is pinned server-side by the generated handler.
+   *
+   * Streams over the API's own regional REST endpoint
+   * (\`ResponseTransferMode.STREAM\`), which allows up to 5 minutes of idle
+   * time and 15 minutes total per streamed response — an edge-optimized
+   * endpoint's CloudFront layer caps idle time at 30s, which is why this
+   * forces the API onto a regional endpoint below.
    */
   public addAguiRoute(harness: MyHarness): void {
     const rc = RuntimeConfig.ensure(this);
-    const aguiHandler = new NodejsFunction(this, 'AguiHandler', {
-      entry: url.fileURLToPath(
-        new URL('../../../../../api/src/agui/handler.ts', import.meta.url),
+    const aguiHandler = new Function(this, 'AguiHandler', {
+      runtime: Runtime.NODEJS_24_X,
+      handler: 'index.handler',
+      code: Code.fromAsset(
+        url.fileURLToPath(
+          new URL(
+            '../../../../../../dist/packages/api/bundle/agui',
+            import.meta.url,
+          ),
+        ),
       ),
-      runtime: Runtime.NODEJS_LATEST,
-      timeout: Duration.seconds(180),
+      timeout: Duration.minutes(15),
       tracing: Tracing.ACTIVE,
-      bundling: {
-        format: OutputFormat.ESM,
-        mainFields: ['module', 'main'],
-        banner:
-          "import { createRequire as __aguiCreateRequire } from 'module'; const require = __aguiCreateRequire(import.meta.url);",
-      },
-      environment: {
-        HARNESS_ARN: harness.harnessArn,
-        MEMORY_ARN: harness.harness.attrMemoryManagedMemoryConfigurationArn,
-      },
     });
     aguiHandler.addEnvironment(
       'RUNTIME_CONFIG_APP_ID',
@@ -95,11 +98,6 @@ export class TestApi extends RestApi {
     // AgentCore Memory, decoupled from the '/agui' connection's lifetime.
     Object.values(this.integrations).forEach((integration) => {
       if ('handler' in integration && integration.handler instanceof Function) {
-        integration.handler.addEnvironment('HARNESS_ARN', harness.harnessArn);
-        integration.handler.addEnvironment(
-          'MEMORY_ARN',
-          harness.harness.attrMemoryManagedMemoryConfigurationArn,
-        );
         Grant.addToPrincipal({
           grantee: integration.handler,
           actions: [
@@ -280,20 +278,19 @@ import {
   mapHarnessStreamToAgui,
   toHarnessMessages,
 } from './converse-to-agui.js';
+import { getHarnessConnection } from './runtime-config.js';
 import { actorIdFromEvent, runtimeSessionIdFor } from './session.js';
 
-const HARNESS_ARN = process.env.HARNESS_ARN!;
 const client = new BedrockAgentCoreClient({});
 
+// Reflects the caller's own Origin rather than checking against an allowlist:
+// the API's authorizer (IAM/Cognito) already gates who may call this route, so
+// this only controls which origins' JS may read the streamed response.
 function getAllowedOrigin(event: APIGatewayProxyEvent): string {
-  const origin = event.headers?.origin ?? event.headers?.Origin;
-  const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',') ?? [];
-  return allowedOrigins.length > 0 && origin && allowedOrigins.includes(origin)
-    ? origin
-    : (allowedOrigins[0] ?? '*');
+  return event.headers?.origin ?? event.headers?.Origin ?? '*';
 }
 
-// POST /agui — body is an AG-UI RunAgentInput; response is AG-UI SSE. Only
+// Body is an AG-UI RunAgentInput; response is AG-UI SSE. Only
 // \`messages\` and \`threadId\` are read from the client input. Every other
 // Harness-invocation field (systemPrompt, model, tools, allowedTools, skills,
 // actorId) is pinned server-side, per the AgentCore Harness security guidance:
@@ -313,22 +310,24 @@ export const handler = awslambda.streamifyResponse(
       },
     );
 
-    // The edge-optimized REST API closes the connection after 30s of silence.
-    // A long, event-free stretch (e.g. a slow tool call) can exceed that, so
-    // send an SSE keepalive comment periodically to hold the stream open until
-    // the Harness resumes emitting events or the Lambda times out.
+    // A regional REST API allows up to 5 minutes of idle time on a streamed
+    // response. A long, event-free stretch (e.g. a slow tool call) can still
+    // exceed that, so send an SSE keepalive comment periodically to hold the
+    // stream open until the Harness resumes emitting events or the Lambda
+    // times out.
     const heartbeat = setInterval(() => {
       httpResponseStream.write(': keepalive\\n\\n');
     }, 15000);
 
     try {
       const input = JSON.parse(event.body ?? '{}') as RunAgentInput;
+      const { harnessArn } = await getHarnessConnection();
       const actorId = actorIdFromEvent(event);
       const runtimeSessionId = runtimeSessionIdFor(actorId, input.threadId);
 
       const { stream } = await client.send(
         new InvokeHarnessCommand({
-          harnessArn: HARNESS_ARN,
+          harnessArn,
           runtimeSessionId,
           actorId,
           messages: toHarnessMessages(input.messages),
@@ -376,20 +375,25 @@ export function runtimeSessionIdFor(actorId: string, threadId: string): string {
 // with, without needing to know the auth mode at generation time:
 // - Cognito (COGNITO_USER_POOLS authorizer): the JWT \`sub\` claim.
 // - IAM (SigV4): no JWT, so the caller's IAM principal ARN is the closest
-//   server-derived identity available.
+//   server-derived identity available, from the REST API's payload format 1.0
+//   \`requestContext.identity.userArn\` — the same field both '/agui' and the
+//   \`history\` procedure read, so history reconstructs what '/agui' wrote.
 // Sanitized because both ARNs (':' and '/') and, in principle, claim values
 // can contain characters InvokeHarness rejects in the actorId field.
 // \`requestContext\` itself is optional-chained too: local dev's tRPC adapter
 // invokes procedures with an empty mock event (no \`requestContext\` at all),
 // which otherwise throws before falling through to the 'anonymous' default.
 export function actorIdFromEvent(event: APIGatewayProxyEvent): string {
-  const claims = (
-    event.requestContext?.authorizer as
-      | { claims?: { sub?: string } }
-      | undefined
-  )?.claims;
+  const requestContext = event.requestContext as
+    | {
+        authorizer?: { claims?: { sub?: string } };
+        identity?: { userArn?: string };
+      }
+    | undefined;
   const id =
-    claims?.sub ?? event.requestContext?.identity?.userArn ?? 'anonymous';
+    requestContext?.authorizer?.claims?.sub ??
+    requestContext?.identity?.userArn ??
+    'anonymous';
   return id.replace(/[^a-zA-Z0-9_-]/g, '-');
 }
 "

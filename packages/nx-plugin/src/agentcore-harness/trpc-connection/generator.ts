@@ -8,12 +8,23 @@ import {
   logger,
   OverwriteStrategy,
   type Tree,
+  updateProjectConfiguration,
 } from '@nx/devkit';
-import { readAgentCoreHarnessMetadata } from '../generator';
+import {
+  addAguiRouteToApi,
+  addAguiRouteToTerraformApi,
+} from '../../connection/harness-trpc-config';
+import type { TsTrpcApiMetadata } from '../../trpc/backend/generator';
 import { addTsDependencies } from '../../utils/add-dependencies';
 import { addDestructuredImport, applyGritQL } from '../../utils/ast';
-import { declareDependencies } from '../../utils/declared-dependencies';
-import { addAguiRouteToApi } from '../../connection/harness-trpc-config';
+import {
+  addTypeScriptBundleTarget,
+  BUNDLE_DEPENDENCIES,
+} from '../../utils/bundle/bundle';
+import {
+  declareDependencies,
+  ownedElsewhere,
+} from '../../utils/declared-dependencies';
 import { formatFilesInSubtree } from '../../utils/format';
 import { installDependencies } from '../../utils/install';
 import { addGeneratorMetricsIfApplicable } from '../../utils/metrics';
@@ -25,17 +36,23 @@ import {
   type NxGeneratorInfo,
   readProjectConfigurationUnqualified,
 } from '../../utils/nx';
-import type { TsTrpcApiMetadata } from '../../trpc/backend/generator';
+import { readAgentCoreHarnessMetadata } from '../generator';
 import type { AgentcoreHarnessTrpcConnectionGeneratorSchema } from './schema';
 
 // The AG-UI route + mapper need these regardless of the connection's options.
+// `rolldown` is only listed for the version sync — the `bundle` target it
+// backs is already installed by the underlying ts#trpc-api project.
 export const DEPENDENCIES = declareDependencies()({
   ts: [
     { name: '@aws-sdk/client-bedrock-agentcore' },
     { name: '@ag-ui/core' },
     { name: '@ag-ui/encoder' },
+    ...ownedElsewhere(BUNDLE_DEPENDENCIES),
   ],
 });
+
+/** Workspace-root-relative directory the AG-UI handler's rolldown bundle is written to. */
+const AGUI_BUNDLE_SUBDIR = 'agui';
 
 export const AGENTCORE_HARNESS_TRPC_CONNECTION_GENERATOR_INFO: NxGeneratorInfo =
   getGeneratorInfo(import.meta.filename);
@@ -86,7 +103,7 @@ export const trpcAgentCoreHarnessConnectionGenerator = async (
     tree,
     joinPathFragments(import.meta.dirname, 'files', 'agui'),
     joinPathFragments(apiProject.root, 'src', 'agui'),
-    { ...esm },
+    { ...esm, harnessNameClassName: harnessMetadata.rc },
     { overwriteStrategy: OverwriteStrategy.KeepExisting },
   );
 
@@ -100,6 +117,27 @@ export const trpcAgentCoreHarnessConnectionGenerator = async (
 
   await registerHistoryProcedure(tree, apiProject.root, esm.esm);
 
+  addTsDependencies(tree, DEPENDENCIES, { projectRoot: apiProject.root });
+
+  // Bundled with rolldown via the API project's own nx-cached `bundle`
+  // target (the same one ts#trpc-api already uses for its router handler),
+  // rather than CDK's NodejsFunction, which re-runs esbuild on every synth.
+  // Both CDK and Terraform package this same bundle output as their Lambda
+  // asset. Mutates the in-memory `apiProject`, so this — and the
+  // `updateProjectConfiguration` that persists it — must come before
+  // `addComponentGeneratorMetadata`, which reads and writes the tree's own
+  // (fresher) copy of the project's metadata.
+  await addTypeScriptBundleTarget(
+    tree,
+    apiProject,
+    {
+      targetFilePath: 'src/agui/handler.ts',
+      bundleOutputDir: AGUI_BUNDLE_SUBDIR,
+    },
+    DEPENDENCIES,
+  );
+  updateProjectConfiguration(tree, apiProject.name, apiProject);
+
   addComponentGeneratorMetadata(
     tree,
     apiProject.name,
@@ -108,15 +146,33 @@ export const trpcAgentCoreHarnessConnectionGenerator = async (
     harnessMetadata.rc,
   );
 
-  addTsDependencies(tree, DEPENDENCIES, { projectRoot: apiProject.root });
+  const bundleOutputDir = joinPathFragments(
+    'dist',
+    apiProject.root,
+    'bundle',
+    AGUI_BUNDLE_SUBDIR,
+  );
 
   await addAguiRouteToApi(tree, {
-    apiProjectRoot: apiProject.root,
     apiNameKebabCase,
     apiNameClassName,
     harnessNameKebabCase: harnessMetadata.name,
     harnessNameClassName: harnessMetadata.rc,
     iac: apiMetadata.iac,
+    auth: apiMetadata.auth,
+    integrationPattern: apiMetadata.integrationPattern,
+    bundleOutputDir,
+  });
+
+  addAguiRouteToTerraformApi(tree, {
+    apiNameKebabCase,
+    apiNameClassName,
+    harnessNameKebabCase: harnessMetadata.name,
+    harnessNameClassName: harnessMetadata.rc,
+    iac: apiMetadata.iac,
+    auth: apiMetadata.auth,
+    integrationPattern: apiMetadata.integrationPattern,
+    bundleOutputDir,
   });
 
   logger.info(

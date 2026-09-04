@@ -10,20 +10,19 @@ import {
   mapHarnessStreamToAgui,
   toHarnessMessages,
 } from './converse-to-agui<% if (esm) { %>.js<% } %>';
+import { getHarnessConnection } from './runtime-config<% if (esm) { %>.js<% } %>';
 import { actorIdFromEvent, runtimeSessionIdFor } from './session<% if (esm) { %>.js<% } %>';
 
-const HARNESS_ARN = process.env.HARNESS_ARN!;
 const client = new BedrockAgentCoreClient({});
 
+// Reflects the caller's own Origin rather than checking against an allowlist:
+// the API's authorizer (IAM/Cognito) already gates who may call this route, so
+// this only controls which origins' JS may read the streamed response.
 function getAllowedOrigin(event: APIGatewayProxyEvent): string {
-  const origin = event.headers?.origin ?? event.headers?.Origin;
-  const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',') ?? [];
-  return allowedOrigins.length > 0 && origin && allowedOrigins.includes(origin)
-    ? origin
-    : (allowedOrigins[0] ?? '*');
+  return event.headers?.origin ?? event.headers?.Origin ?? '*';
 }
 
-// POST /agui — body is an AG-UI RunAgentInput; response is AG-UI SSE. Only
+// Body is an AG-UI RunAgentInput; response is AG-UI SSE. Only
 // `messages` and `threadId` are read from the client input. Every other
 // Harness-invocation field (systemPrompt, model, tools, allowedTools, skills,
 // actorId) is pinned server-side, per the AgentCore Harness security guidance:
@@ -43,22 +42,24 @@ export const handler = awslambda.streamifyResponse(
       },
     );
 
-    // The edge-optimized REST API closes the connection after 30s of silence.
-    // A long, event-free stretch (e.g. a slow tool call) can exceed that, so
-    // send an SSE keepalive comment periodically to hold the stream open until
-    // the Harness resumes emitting events or the Lambda times out.
+    // A regional REST API allows up to 5 minutes of idle time on a streamed
+    // response. A long, event-free stretch (e.g. a slow tool call) can still
+    // exceed that, so send an SSE keepalive comment periodically to hold the
+    // stream open until the Harness resumes emitting events or the Lambda
+    // times out.
     const heartbeat = setInterval(() => {
       httpResponseStream.write(': keepalive\n\n');
     }, 15000);
 
     try {
       const input = JSON.parse(event.body ?? '{}') as RunAgentInput;
+      const { harnessArn } = await getHarnessConnection();
       const actorId = actorIdFromEvent(event);
       const runtimeSessionId = runtimeSessionIdFor(actorId, input.threadId);
 
       const { stream } = await client.send(
         new InvokeHarnessCommand({
-          harnessArn: HARNESS_ARN,
+          harnessArn,
           runtimeSessionId,
           actorId,
           messages: toHarnessMessages(input.messages),
