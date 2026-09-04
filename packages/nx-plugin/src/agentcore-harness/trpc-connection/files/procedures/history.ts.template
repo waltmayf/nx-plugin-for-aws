@@ -3,6 +3,7 @@ import {
   ListEventsCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
 import { z } from 'zod';
+import { getHarnessConnection } from '../agui/runtime-config<% if (esm) { %>.js<% } %>';
 import { actorIdFromEvent, runtimeSessionIdFor } from '../agui/session<% if (esm) { %>.js<% } %>';
 import { publicProcedure } from '../init<% if (esm) { %>.js<% } %>';
 
@@ -135,10 +136,14 @@ export const history = publicProcedure
   .query(async ({ input, ctx }) => {
     const actorId = actorIdFromEvent(ctx.event);
     const sessionId = runtimeSessionIdFor(actorId, input.threadId);
+    const { memoryArn } = await getHarnessConnection();
+    if (!memoryArn) {
+      return { messages: [] };
+    }
 
     const { events } = await client.send(
       new ListEventsCommand({
-        memoryId: process.env.MEMORY_ARN!,
+        memoryId: memoryArn,
         actorId,
         sessionId,
         includePayloads: true,

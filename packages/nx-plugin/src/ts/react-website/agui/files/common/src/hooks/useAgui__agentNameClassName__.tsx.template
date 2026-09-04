@@ -102,17 +102,10 @@ export const useAgui<%= agentNameClassName %> = (): Record<string, AbstractAgent
   const auth = useAuth();
   <%_ } _%>
 
-  <%_ if (auth === 'iam') { _%>
-  // Deployed: a Lambda Function URL (RESPONSE_STREAM) exposed as `apis.Agui`;
-  // aws4fetch signs it for the 'lambda' service automatically from its host.
-  // Local dev: fall back to the tRPC dev server's `/agui` route.
-  const url = useMemo(
-    () => runtimeConfig.apis.Agui ?? `${apiUrl.replace(/\/$/, '')}/agui`,
-    [runtimeConfig.apis.Agui, apiUrl],
-  );
-  <%_ } else { _%>
+  // The API's own regional REST endpoint streams '/agui' directly
+  // (ResponseTransferMode.STREAM); there's no separate Function URL to fall
+  // back to.
   const url = useMemo(() => `${apiUrl.replace(/\/$/, '')}/agui`, [apiUrl]);
-  <%_ } _%>
 
   const agent = useMemo((): AbstractAgent => {
     <%_ if (auth === 'iam') { _%>

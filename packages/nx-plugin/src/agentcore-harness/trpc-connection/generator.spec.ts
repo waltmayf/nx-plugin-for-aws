@@ -129,6 +129,42 @@ describe('agentcore-harness#trpc-connection generator', () => {
     );
   };
 
+  const setupTerraformApiModule = (apiNameKebabCase = 'api') => {
+    tree.write(
+      `packages/common/terraform/src/app/apis/${apiNameKebabCase}/${apiNameKebabCase}.tf`,
+      [
+        'module "rest_api" {',
+        '  source = "../../../core/api/rest-api"',
+        '}',
+        '',
+        'resource "aws_iam_role" "lambda_execution_role" {',
+        '  name = "ApiHandler-execution-role-${random_string.suffix.result}"',
+        '}',
+        '',
+        'resource "aws_api_gateway_deployment" "api_deployment" {',
+        '  rest_api_id = module.rest_api.api_id',
+        '}',
+        '',
+      ].join('\n'),
+    );
+  };
+
+  const setupTerraformHarnessModule = (harnessNameKebabCase = 'my-harness') => {
+    tree.write(
+      `packages/common/terraform/src/app/harnesses/${harnessNameKebabCase}/${harnessNameKebabCase}.tf`,
+      [
+        'output "harness_arn" {',
+        '  value = "arn:aws:bedrock-agentcore:us-east-1:111111111111:harness/my-harness"',
+        '}',
+        '',
+        'output "memory_arn" {',
+        '  value = null',
+        '}',
+        '',
+      ].join('\n'),
+    );
+  };
+
   beforeEach(() => {
     tree = createTreeUsingTsSolutionSetup();
   });
@@ -227,7 +263,7 @@ describe('agentcore-harness#trpc-connection generator', () => {
     );
   });
 
-  it('adds an addAguiRoute method to the api CDK construct', async () => {
+  it('adds an addAguiRoute method to the api CDK construct, streaming over a regional REST route for iam auth', async () => {
     setupTrpcApi();
     setupHarness();
     setupApiConstruct();
@@ -244,26 +280,26 @@ describe('agentcore-harness#trpc-connection generator', () => {
     )!;
     expect(construct).toContain('public addAguiRoute(harness: MyHarness)');
     expect(construct).toContain('harness.grantInvokeAccess(aguiHandler)');
-    // IAM auth streams over a Lambda Function URL (RESPONSE_STREAM), not an
-    // API Gateway route. The handle is stored on an injected field and its
-    // invoke permission is granted from the existing grantInvokeAccess method.
+    // All auth modes stream '/agui' over the same API Gateway REST route
+    // (ResponseTransferMode.STREAM) the Function URL special-case is retired
+    // in favour of, forced onto a regional endpoint so the stream isn't
+    // capped by an edge-optimized endpoint's CloudFront 30s idle timeout.
+    expect(construct).toContain("this.api.root.addResource('agui')");
+    expect(construct).toContain('ResponseTransferMode.STREAM');
     expect(construct).toContain(
-      'this.aguiFunctionUrl = aguiHandler.addFunctionUrl(',
+      'endpointConfiguration: { types: [EndpointType.REGIONAL] },',
     );
-    expect(construct).toContain('InvokeMode.RESPONSE_STREAM');
-    expect(construct).toContain('FunctionUrlAuthType.AWS_IAM');
-    expect(construct).toContain('public aguiFunctionUrl?: FunctionUrl;');
-    expect(construct).toContain(
-      'this.aguiFunctionUrl?.grantInvokeUrl(grantee);',
-    );
-    expect(construct).not.toContain("this.api.root.addResource('agui')");
+    expect(construct).not.toContain('FunctionUrl');
+    expect(construct).not.toContain('InvokeMode');
+    expect(construct).not.toContain('aws4fetch');
+    // Bundled with rolldown ahead of synth, not CDK's NodejsFunction.
+    expect(construct).not.toContain('NodejsFunction');
+    expect(construct).toContain('Code.fromAsset(');
+    expect(construct).toContain('dist/packages/api/bundle/agui');
     expect(construct).toMatchSnapshot('api-construct.ts');
   });
 
-  it('falls back to an API Gateway route for non-iam auth', async () => {
-    // Function URLs only support AWS_IAM/NONE auth, so a cognito API keeps the
-    // '/agui' route on API Gateway (inheriting its Cognito authorizer) and
-    // gains none of the Function URL members.
+  it('adds the same regional API Gateway route for non-iam auth', async () => {
     setupTrpcApi('api', { auth: 'cognito' });
     setupHarness();
     setupApiConstruct();
@@ -281,8 +317,32 @@ describe('agentcore-harness#trpc-connection generator', () => {
     expect(construct).toContain('public addAguiRoute(harness: MyHarness)');
     expect(construct).toContain("this.api.root.addResource('agui')");
     expect(construct).toContain('ResponseTransferMode.STREAM');
-    expect(construct).not.toContain('addFunctionUrl');
-    expect(construct).not.toContain('aguiFunctionUrl');
+    expect(construct).toContain(
+      'endpointConfiguration: { types: [EndpointType.REGIONAL] },',
+    );
+    expect(construct).not.toContain('FunctionUrl');
+  });
+
+  it('adds a bundle target to the api project for the agui handler', async () => {
+    setupTrpcApi();
+    setupHarness();
+    setupApiConstruct();
+    setupHarnessConstruct();
+
+    await trpcAgentCoreHarnessConnectionGenerator(tree, {
+      sourceProject: 'api',
+      targetProject: 'harness',
+    });
+
+    const { readProjectConfiguration } = await import('@nx/devkit');
+    const config = readProjectConfiguration(tree, 'api');
+    expect(config.targets?.bundle).toBeDefined();
+    const rolldownConfig = tree.read(
+      'packages/api/rolldown.config.ts',
+      'utf-8',
+    );
+    expect(rolldownConfig).toContain("input: 'src/agui/handler.ts'");
+    expect(rolldownConfig).toContain('bundle/agui');
   });
 
   it('records connection metadata on the source project', async () => {
@@ -326,10 +386,11 @@ describe('agentcore-harness#trpc-connection generator', () => {
     expect(tree.exists('packages/api/src/agui/handler.ts')).toBe(true);
   });
 
-  it('warns and skips the infra patch for terraform apis', async () => {
-    setupTrpcApi('api', { iac: 'terraform' });
-    setupHarness();
-    setupHarnessConstruct();
+  it('wires the /agui route into the api terraform module', async () => {
+    setupTrpcApi('api', { iac: 'terraform', auth: 'cognito' });
+    setupHarness('harness', { iac: 'terraform' });
+    setupTerraformApiModule();
+    setupTerraformHarnessModule();
 
     await trpcAgentCoreHarnessConnectionGenerator(tree, {
       sourceProject: 'api',
@@ -337,9 +398,71 @@ describe('agentcore-harness#trpc-connection generator', () => {
     });
 
     expect(tree.exists('packages/api/src/agui/handler.ts')).toBe(true);
+    // Terraform doesn't get the CDK construct patch.
     expect(tree.exists('packages/common/constructs/src/app/apis/api.ts')).toBe(
       false,
     );
+
+    const module = tree.read(
+      'packages/common/terraform/src/app/apis/api/api.tf',
+      'utf-8',
+    )!;
+    expect(module).toContain('variable "agui_harness_arn"');
+    expect(module).toContain('variable "agui_harness_memory_arn"');
+    expect(module).toContain('resource "aws_lambda_function" "agui_handler"');
+    expect(module).toContain('resource "aws_api_gateway_resource" "agui"');
+    expect(module).toContain('response_transfer_mode  = "STREAM"');
+    expect(module).toContain('authorization = "COGNITO_USER_POOLS"');
+    expect(module).toContain(
+      'authorizer_id = aws_api_gateway_authorizer.cognito_authorizer.id',
+    );
+    expect(module).toContain('bundle/agui');
+    expect(module).toContain(
+      'resource "aws_iam_role_policy" "agui_memory_read"',
+    );
+  });
+
+  it('is idempotent when re-run against a terraform api', async () => {
+    setupTrpcApi('api', { iac: 'terraform' });
+    setupHarness('harness', { iac: 'terraform' });
+    setupTerraformApiModule();
+    setupTerraformHarnessModule();
+
+    const run = () =>
+      trpcAgentCoreHarnessConnectionGenerator(tree, {
+        sourceProject: 'api',
+        targetProject: 'harness',
+      });
+
+    await run();
+    const moduleAfterFirst = tree.read(
+      'packages/common/terraform/src/app/apis/api/api.tf',
+      'utf-8',
+    );
+
+    await run();
+
+    expect(
+      tree.read('packages/common/terraform/src/app/apis/api/api.tf', 'utf-8'),
+    ).toEqual(moduleAfterFirst);
+  });
+
+  it('warns and skips the terraform infra patch when the harness has no generated module', async () => {
+    setupTrpcApi('api', { iac: 'terraform' });
+    setupHarness('harness', { iac: undefined });
+    setupTerraformApiModule();
+    // No harness module generated (infra: 'none' on the harness).
+
+    await trpcAgentCoreHarnessConnectionGenerator(tree, {
+      sourceProject: 'api',
+      targetProject: 'harness',
+    });
+
+    const module = tree.read(
+      'packages/common/terraform/src/app/apis/api/api.tf',
+      'utf-8',
+    )!;
+    expect(module).not.toContain('agui_harness_arn');
   });
 
   it('is idempotent when re-run with the same inputs', async () => {

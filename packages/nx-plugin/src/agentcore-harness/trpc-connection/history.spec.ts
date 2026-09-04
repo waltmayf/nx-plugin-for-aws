@@ -24,14 +24,18 @@ vi.mock('@aws-sdk/client-bedrock-agentcore', () => ({
 // mocked AWS SDK call and the tRPC procedure wrapper), so it's exercised
 // directly against the generator's own template source, mirroring
 // session.spec.ts / converse-to-agui.spec.ts. Its EJS `esm` conditionals are
-// rendered away (esm: false) and its `../agui/session` / `../init` imports
-// are pointed at local stubs standing in for the real session helpers and
-// the real tRPC `publicProcedure` builder, since only the transformation
-// logic in this file is under test here.
+// rendered away (esm: false) and its `../agui/session` / `../agui/runtime-config`
+// / `../init` imports are pointed at local stubs standing in for the real
+// session/runtime-config helpers and the real tRPC `publicProcedure` builder,
+// since only the transformation logic in this file is under test here.
 const dir = import.meta.dirname;
 const sessionStubPath = path.join(
   dir,
   '.history.session-stub.generated-for-test.ts',
+);
+const runtimeConfigStubPath = path.join(
+  dir,
+  '.history.runtime-config-stub.generated-for-test.ts',
 );
 const initStubPath = path.join(dir, '.history.init-stub.generated-for-test.ts');
 const tempModulePath = path.join(dir, '.history.generated-for-test.ts');
@@ -45,6 +49,15 @@ fs.writeFileSync(
     '',
     'export function runtimeSessionIdFor(): string {',
     "  return 'session-1';",
+    '}',
+    '',
+  ].join('\n'),
+);
+fs.writeFileSync(
+  runtimeConfigStubPath,
+  [
+    'export async function getHarnessConnection() {',
+    "  return { harnessArn: 'harness-1', memoryArn: 'memory-1' };",
     '}',
     '',
   ].join('\n'),
@@ -73,11 +86,20 @@ const rendered = fs
   .readFileSync(templatePath, 'utf-8')
   .replace(/<% if \(esm\) \{ %>\.js<% \} %>/g, '')
   .replace("'../agui/session'", `'./${path.basename(sessionStubPath, '.ts')}'`)
+  .replace(
+    "'../agui/runtime-config'",
+    `'./${path.basename(runtimeConfigStubPath, '.ts')}'`,
+  )
   .replace("'../init'", `'./${path.basename(initStubPath, '.ts')}'`);
 fs.writeFileSync(tempModulePath, rendered);
 
 afterAll(() => {
-  for (const p of [sessionStubPath, initStubPath, tempModulePath]) {
+  for (const p of [
+    sessionStubPath,
+    runtimeConfigStubPath,
+    initStubPath,
+    tempModulePath,
+  ]) {
     fs.rmSync(p, { force: true });
   }
 });
