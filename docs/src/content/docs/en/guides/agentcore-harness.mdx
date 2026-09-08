@@ -61,7 +61,7 @@ Infrastructure is generated when `infra` is `agentcore` (the default). With `inf
 
 The generated infrastructure manages the Harness through the native resource (CDK `aws_bedrockagentcore.CfnHarness`, Terraform `aws_bedrockagentcore_harness`) with your generated defaults, creates an IAM execution role with the baseline permissions described below, and uses IAM inbound authorization (no custom JWT authorizer is configured by default).
 
-The Harness ARN is registered at `agentcore.harnesses.<ClassName>` in <Link path="guides/runtime-config">Runtime Configuration</Link>, preserving any existing entries.
+The Harness's ARN and Memory ARN are registered at `agentcore.harnesses.<ClassName>` (as `{ arn, memoryArn }`) in <Link path="guides/runtime-config">Runtime Configuration</Link>, preserving any existing entries. `memoryArn` is only set once the service has provisioned managed memory — it's absent for an externally-owned or disabled memory configuration.
 
 ## Deploying your AgentCore Harness
 
